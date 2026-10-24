@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"lds.li/age-plugin-icloud/internal/platform"
 	"lds.li/keychain"
 )
 
@@ -21,35 +22,31 @@ var (
 	secrets    = map[string]*age.HybridIdentity{}
 	auth       *keychain.AuthContext
 	presenceOK bool
-	agOnce     sync.Once
-	ag         string
-	agErr      error
+	storeOnce  sync.Once
+	kc         *keychain.PasswordStore
+	storeErr   error
 )
 
-func accessGroup() (string, error) {
-	agOnce.Do(func() {
+// store returns the synced data protection keychain store for identities.
+func store() (*keychain.PasswordStore, error) {
+	storeOnce.Do(func() {
 		team, err := keychain.TeamIdentifier()
 		if err != nil {
-			agErr = fmt.Errorf("age-plugin-icloud must be signed with a stable Apple Team ID (see README): %w", err)
+			storeErr = fmt.Errorf("age-plugin-icloud must be signed with a stable Apple Team ID (see README): %w", err)
 			return
 		}
-		ag = team + "." + BundleID
+		kc, err = keychain.NewPasswordStore(keychain.PasswordStoreOptions{
+			Service:        Service,
+			Backend:        keychain.BackendDataProtection,
+			Synchronizable: true,
+			AccessGroup:    team + "." + BundleID,
+			AccessControl:  keychain.AccessControl{Protection: keychain.AccessibleAfterFirstUnlock},
+		})
+		if err != nil {
+			storeErr = fmt.Errorf("keychain store: %w", err)
+		}
 	})
-	return ag, agErr
-}
-
-func baseQuery(name string) (keychain.GenericPasswordQuery, error) {
-	group, err := accessGroup()
-	if err != nil {
-		return keychain.GenericPasswordQuery{}, err
-	}
-	return keychain.GenericPasswordQuery{
-		Account:                   name,
-		Service:                   Service,
-		Synchronizable:            keychain.Bool(true),
-		UseDataProtectionKeychain: keychain.Bool(true),
-		AccessGroup:               group,
-	}, nil
+	return kc, storeErr
 }
 
 func wrapKeychain(op string, err error) error {
@@ -82,7 +79,7 @@ func Generate(name string, mode AccessControlMode) (string, error) {
 	if mode == "" {
 		mode = AccessControl5m
 	}
-	group, err := accessGroup()
+	s, err := store()
 	if err != nil {
 		return "", err
 	}
@@ -97,19 +94,11 @@ func Generate(name string, mode AccessControlMode) (string, error) {
 		return "", err
 	}
 
-	item := keychain.GenericPassword{
-		Account:                   name,
-		Service:                   Service,
-		Label:                     fmt.Sprintf("age-plugin-icloud (%s)", name),
-		Value:                     []byte(id.String()),
-		GenericAttributes:         generic,
-		Synchronizable:            keychain.Bool(true),
-		UseDataProtectionKeychain: keychain.Bool(true),
-		AccessGroup:               group,
-		Accessible:                keychain.AccessibleAfterFirstUnlock,
+	attrs := &keychain.PasswordAttributes{
+		Label:             fmt.Sprintf("age-plugin-icloud (%s)", name),
+		GenericAttributes: generic,
 	}
-
-	if err := keychain.CreateGenericPassword(item); err != nil {
+	if err := s.Create(name, []byte(id.String()), attrs); err != nil {
 		return "", wrapKeychain("create identity", err)
 	}
 
@@ -118,16 +107,12 @@ func Generate(name string, mode AccessControlMode) (string, error) {
 
 // List returns names and recipients without reading secrets.
 func List() ([]Item, error) {
-	q, err := baseQuery("")
+	s, err := store()
 	if err != nil {
 		return nil, err
 	}
-	passwords, err := keychain.ListGenericPasswords(q)
+	passwords, err := s.List()
 	if err != nil {
-		var kcErr *keychain.Error
-		if errors.As(err, &kcErr) && kcErr.Code() == keychain.ErrorCodeItemNotFound {
-			return nil, nil
-		}
 		return nil, wrapKeychain("list identities", err)
 	}
 	items := make([]Item, 0, len(passwords))
@@ -151,11 +136,15 @@ func Delete(name string) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
-	q, err := baseQuery(name)
+	s, err := store()
 	if err != nil {
 		return err
 	}
-	if err := keychain.DeleteGenericPassword(q); err != nil {
+	// Delete of a missing account succeeds; check first to report it.
+	if _, err := s.Metadata(name); err != nil {
+		return wrapKeychain("delete identity "+name, err)
+	}
+	if err := s.Delete(name); err != nil {
 		return wrapKeychain("delete identity "+name, err)
 	}
 	mu.Lock()
@@ -198,14 +187,13 @@ func LoadRecipient(name string) (age.Recipient, error) {
 	if name == "" {
 		name = DefaultName
 	}
-	q, err := baseQuery(name)
+	s, err := store()
 	if err != nil {
 		return nil, err
 	}
-	attrs, err := keychain.GetGenericPasswordAttributes(q)
+	attrs, err := s.Metadata(name)
 	if err != nil {
-		var kcErr *keychain.Error
-		if errors.As(err, &kcErr) && kcErr.Code() == keychain.ErrorCodeItemNotFound {
+		if errors.Is(err, keychain.ErrItemNotFound) {
 			if name == DefaultName {
 				return nil, errors.New("no default identity; run age-plugin-icloud --generate")
 			}
@@ -227,11 +215,11 @@ func loadSecretLocked(name string) (*age.HybridIdentity, error) {
 	if id, ok := secrets[name]; ok {
 		return id, nil
 	}
-	q, err := baseQuery(name)
+	s, err := store()
 	if err != nil {
 		return nil, err
 	}
-	attrs, err := keychain.GetGenericPasswordAttributes(q)
+	attrs, err := s.Metadata(name)
 	if err != nil {
 		return nil, wrapKeychain("load identity "+name, err)
 	}
@@ -249,12 +237,16 @@ func loadSecretLocked(name string) (*age.HybridIdentity, error) {
 			if mode == AccessControl5m {
 				a.stampPresence(machine, time.Now())
 				if raw, err := json.Marshal(a); err == nil {
-					_ = keychain.UpdateGenericPasswordAttributes(q, raw)
+					// SetAttributes replaces the label too, so carry it over.
+					_ = s.SetAttributes(name, keychain.PasswordAttributes{
+						Label:             attrs.Label,
+						GenericAttributes: raw,
+					})
 				}
 			}
 		}
 	}
-	secret, err := keychain.GetGenericPassword(q)
+	secret, err := s.Get(name)
 	if err != nil {
 		return nil, wrapKeychain("load identity "+name, err)
 	}
@@ -297,7 +289,7 @@ func presenceReason(name string) string {
 }
 
 func machineID() string {
-	id, err := keychain.PlatformUUID()
+	id, err := platform.UUID()
 	if err != nil || id == "" {
 		id, _ = os.Hostname()
 	}
