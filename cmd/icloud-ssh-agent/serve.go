@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"golang.org/x/term"
-	"lds.li/age-plugin-icloud/internal/kc"
-	"lds.li/age-plugin-icloud/internal/sshagent"
-	"lds.li/age-plugin-icloud/internal/sshstore"
+	"lds.li/icloud-keys/internal/kc"
+	"lds.li/icloud-keys/internal/sshagent"
+	"lds.li/icloud-keys/internal/sshstore"
 )
 
 type touchID struct{}

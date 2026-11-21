@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"lds.li/age-plugin-icloud/internal/launchsvc"
-	"lds.li/age-plugin-icloud/internal/sshstore"
+	"lds.li/icloud-keys/internal/launchsvc"
+	"lds.li/icloud-keys/internal/sshstore"
 )
 
 const plistName = "li.lds.icloud-ssh-agent.plist"

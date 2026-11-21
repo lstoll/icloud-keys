@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
-	"lds.li/age-plugin-icloud/internal/kc"
-	"lds.li/age-plugin-icloud/internal/sshagent"
+	"lds.li/icloud-keys/internal/kc"
+	"lds.li/icloud-keys/internal/sshagent"
 )
 
 type memBackend struct{ items map[string]*memItem }

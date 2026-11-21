@@ -8,7 +8,7 @@ import (
 
 	"filippo.io/age"
 	"filippo.io/age/plugin"
-	"lds.li/age-plugin-icloud/internal/identity"
+	"lds.li/icloud-keys/internal/identity"
 )
 
 func main() {

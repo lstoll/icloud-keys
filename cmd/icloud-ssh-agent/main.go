@@ -13,8 +13,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
-	"lds.li/age-plugin-icloud/internal/sshagent"
-	"lds.li/age-plugin-icloud/internal/sshstore"
+	"lds.li/icloud-keys/internal/sshagent"
+	"lds.li/icloud-keys/internal/sshstore"
 )
 
 const usage = `icloud-ssh-agent keeps SSH keys in iCloud Keychain and serves them as an

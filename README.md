@@ -1,105 +1,129 @@
-# age-plugin-icloud
+# icloud-keys
 
-:warning: *This is mostly vibe coded, and homelab quality code. It has not been deeply security reviewed, and the design does have limitations*
+- [`age-plugin-icloud`](#age-plugin-icloud) lets me decrypt [age](https://age-encryption.org) files on any of my Macs without copying a private key around.
+- [`icloud-ssh-agent`](#icloud-ssh-agent) syncs SSH keys the same way. I can sign Git commits without a prompt and still require Touch ID for SSH logins.
 
-An [age](https://age-encryption.org) plugin that keeps an MLKEM768-X25519 secret in iCloud Keychain. Recipients are ordinary `age1pq1...` public keys, so encryption does not need this plugin.
+I built these for my homelab, with a fair bit of AI help. They haven't had a thorough security review.
 
-Limitations:
-* Secret is stored in the iCloud keychain, and synced. It is protected to the normal Keychain + Sync levels, the secret is extractable.
-* The biometric unlock is enforced by the plugin, not the keychain. The unlock time is stored as an attribute on the secret. The command only changes the access level after Touch ID, but anything granted permission to the keychain item can change it directly.
+Each tool ships as a signed macOS app with its own Keychain access group. Both store exportable private keys in iCloud Keychain. The apps enforce their own Touch ID policies because synced Keychain items can't require it directly. Software with access to an item can read the key and change its policy.
 
 ## Install
 
-macOS only. The plugin is a dummy `.app`, symlink the command in to the .app (required for the needed signing)
+You'll need an Apple silicon Mac running macOS 14 or later, signed in to your Apple Account with iCloud Keychain enabled.
 
-Download the zip from [Releases](https://github.com/lstoll/age-plugin-icloud/releases).
+With Homebrew, install whichever tool you need. The SSH cask needs a tagged SSH agent release.
 
-```bash
-ln -sf /path/to/age-plugin-icloud.app/Contents/MacOS/age-plugin-icloud <somewhere on $PATH>/age-plugin-icloud
+```sh
+brew tap lstoll/tap
+brew trust --tap lstoll/tap
+brew install --cask age-plugin-icloud
+brew install --cask icloud-ssh-agent
 ```
 
-## Usage
+For a manual install, download the zip for your tool and move the `.app` to `/Applications`. Release tags start with `age-plugin-icloud-v` or `icloud-ssh-agent-v`. The original age release is tagged `v0.1.0`. [Releases](https://github.com/lstoll/icloud-keys/releases)
 
-Generate (once, on any signed-in Mac). Default name is `default`. `--access-control` is stored on the item (default `5m`).
+Symlink the command into a directory on your `PATH`. Keep the executable inside the signed app bundle so it can access iCloud Keychain.
 
-```bash
+```sh
+ln -s /Applications/age-plugin-icloud.app/Contents/MacOS/age-plugin-icloud /usr/local/bin/
+ln -s /Applications/icloud-ssh-agent.app/Contents/MacOS/icloud-ssh-agent /usr/local/bin/
+```
+
+## age-plugin-icloud
+
+Generate the identity once. The name defaults to `default` and the decryption policy defaults to `5m`.
+
+```sh
+mkdir -p ~/.age
 age-plugin-icloud --generate > ~/.age/icloud.txt
-age-plugin-icloud --generate --name sops-secret --access-control=everyTime
-age-plugin-icloud --generate --name ssh --access-control=none
 ```
 
-Stdout is the identity pointer plus a commented `age1pq` recipient. The secret is only in Keychain. Reprint later with `--list` (optionally `--name`).
+That file contains a reference to the Keychain item and the public `age1pq1...` recipient in a comment. The ML-KEM-768/X25519 private key stays in Keychain. To recreate the file after the key has synced to another Mac, run `mkdir -p ~/.age` and `age-plugin-icloud --list --name default > ~/.age/icloud.txt`.
 
-```bash
-age-plugin-icloud --list --name work > ~/.age/icloud-work.txt
-```
+Pick an access mode when you generate an identity, for example `age-plugin-icloud --generate --name work --access-control=everyTime`.
 
-Encrypt with the native recipient (any age 1.3.2+ client, no plugin):
+| Mode | Decryption |
+| --- | --- |
+| `none` | No prompt |
+| `everyTime` | Ask for Touch ID or your Mac password each time you run age |
+| `5m` | Reuse a recent approval on this Mac. A recent Touch ID unlock can also count. |
 
-```bash
-age -r age1pq1... -o secret.age file
-```
+Anyone with the public recipient can encrypt with age 1.3.2 or later. Run `age -r age1pq1... -o secret.age file`, substituting your full recipient. On a Mac with the plugin installed, you can use the identity file in both directions.
 
-Encrypt from the identity file or `-j icloud` (reads the stored public key only):
-
-```bash
+```sh
 age -e -i ~/.age/icloud.txt -o secret.age file
-age -e -j icloud -o secret.age file
+age -d -i ~/.age/icloud.txt -o file.decrypted secret.age
 ```
 
-Decrypt on any Mac with that Apple ID (plugin + Keychain).
+You can also use `-j icloud` in place of `-i ~/.age/icloud.txt`. It encrypts to `default` and tries all stored identities when decrypting.
 
-```bash
-age -d -i ~/.age/icloud.txt secret.age
-age -d -j icloud secret.age
-```
+`--set-access-control` and `--export` were added after v0.1.0 and always ask for approval. Export prints the private key in age's native format. Use a new filename for the export.
 
-`-j icloud` with an empty identity decrypts with every stored name and encrypts to `default`.
-
-```bash
+```sh
 age-plugin-icloud --list
-age-plugin-icloud --list --name work
-age-plugin-icloud --delete --name work
-```
-
-Change an identity's access control, or print its secret key. Both always ask for Touch ID, whatever the current access control:
-
-```bash
 age-plugin-icloud --set-access-control --name work --access-control=everyTime
-age-plugin-icloud --export --name work > work.key
+(umask 077; age-plugin-icloud --export --name work > work.key)
 ```
+
+`age-plugin-icloud --delete --name work` removes the identity from iCloud Keychain and syncs that deletion to your other devices.
 
 ## icloud-ssh-agent
 
-An SSH agent from the same repo, shipped as its own signed app (`icloud-ssh-agent.app`). Keys live in iCloud Keychain, in a separate access group from the age identities, and sync to every Mac on the Apple ID. The same limitations apply: secrets are extractable, and prompts are enforced by the agent, not by Keychain.
+### Set up
 
-Every signature is checked against the key's policy, based on what is being signed:
-
-| purpose | what | default |
-|---|---|---|
-| `ssh` | logging in to a host | `prompt` |
-| `git` | `git commit`/`tag` signing (`ssh-keygen -Y sign -n git`) | `allow` |
-| `sign` | other `ssh-keygen -Y sign` namespaces | `prompt` |
-
-Actions are `allow`, `prompt` (Touch ID every time), `prompt-5m` (Touch ID, then five minutes per key and purpose) and `deny`. Unlisted purposes, and anything the agent can't classify, are denied. Requests through a forwarded agent always prompt. With OpenSSH 8.9+ the prompt names the destination host, from `known_hosts`. Every decision is logged to `~/Library/Logs/icloud-ssh-agent.log`.
-
-```bash
-icloud-ssh-agent install                 # login item via SMAppService; prints ssh/git config
-icloud-ssh-agent generate work           # or: --policy git=allow,ssh=prompt-5m
-icloud-ssh-agent import old ~/.ssh/id_ed25519 --policy ssh=prompt
-icloud-ssh-agent list
-icloud-ssh-agent public-key work         # authorized_keys line
-icloud-ssh-agent set-policy work ssh=prompt,git=allow     # Touch ID
-icloud-ssh-agent export work > work.pem                    # Touch ID
-icloud-ssh-agent delete work
+```sh
+icloud-ssh-agent install
+icloud-ssh-agent generate work
 icloud-ssh-agent status
+icloud-ssh-agent public-key work
 ```
 
-Point ssh at the agent in `~/.ssh/config`:
+`install` registers the agent as a login item. If macOS asks for approval, go to System Settings → General → Login Items. Add the public key to the server or Git host you want to log in to, then point SSH at the agent in `~/.ssh/config`.
 
-```
+```sshconfig
 Host *
   IdentityAgent ~/.ssh/icloud-ssh-agent.sock
 ```
 
-`ssh-keygen` (and so git signing) only reads `SSH_AUTH_SOCK`, so also `export SSH_AUTH_SOCK=~/.ssh/icloud-ssh-agent.sock`. Import leaves the original key file in place.
+To sign Git commits, add the public key as a signing key with your Git host too. Put the `export` line in your shell profile so `ssh-keygen`, which Git uses to sign, can find the agent.
+
+```sh
+export SSH_AUTH_SOCK="$HOME/.ssh/icloud-ssh-agent.sock"
+
+git config --global gpg.format ssh
+git config --global user.signingkey "key::$(icloud-ssh-agent public-key work)"
+git config --global commit.gpgsign true
+```
+
+### Signing policy
+
+Each key has its own policy. By default, the agent allows signatures in the `git` namespace and prompts for SSH logins and other `ssh-keygen -Y sign` namespaces.
+
+| Purpose | What it covers | Default |
+| --- | --- | --- |
+| `ssh` | SSH logins | `prompt` |
+| `git` | SSH signatures in the `git` namespace | `allow` |
+| `sign` | SSH signatures in other namespaces | `prompt` |
+
+Use `allow` to sign immediately, `prompt` to ask each time, `prompt-5m` to reuse approval for the same key and purpose for five minutes, or `deny` to refuse. The agent also refuses unlisted purposes and requests it can't classify.
+
+When an SSH client sends a session binding, the agent checks login requests against that session. It looks up the host key in `known_hosts` for the prompt and falls back to the key's fingerprint if there's no match. Connections marked as forwarded in a session binding require a fresh approval for any permitted signature. With forwarding that doesn't send a binding, the agent applies the usual policy. Under launchd, signing decisions go to `~/Library/Logs/icloud-ssh-agent.log`.
+
+### Manage keys
+
+```sh
+icloud-ssh-agent list
+icloud-ssh-agent import work-existing ~/.ssh/id_ed25519
+icloud-ssh-agent set-policy work git=allow,ssh=prompt-5m
+(umask 077; icloud-ssh-agent export work > work.pem)
+```
+
+You can pass `--policy` to `generate` or `import`. Generation creates an Ed25519 key. Import accepts OpenSSH or PEM private keys (Ed25519, ECDSA, or RSA), prompts if the key is encrypted, and leaves the source file in place. Use `-` as the filename to read from stdin.
+
+Changing a policy or exporting a key requires approval. Use a new filename for the export. `icloud-ssh-agent delete work` removes the key from iCloud Keychain and syncs that deletion to your other devices. `icloud-ssh-agent uninstall` removes the login item and leaves your keys in iCloud Keychain.
+
+## Build from source
+
+Run `TOOL=age-plugin-icloud ./scripts/sign.sh` or `TOOL=icloud-ssh-agent ./scripts/sign.sh` to build an app with your Apple Development signing identity. You'll need a provisioning profile for the matching bundle ID (`li.lds.age-plugin-icloud` or `li.lds.icloud-ssh-agent`).
+
+With Developer ID and notarization credentials configured, run `./scripts/dist.sh` with the same `TOOL` to sign, notarize, and zip the app. The release workflow builds each tool from its own version tags.

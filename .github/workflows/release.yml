@@ -29,7 +29,7 @@ concurrency:
 jobs:
   plan:
     name: Plan
-    if: ${{ github.repository == 'lstoll/age-plugin-icloud' && !github.event.repository.fork && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)) }}
+    if: ${{ github.repository == 'lstoll/icloud-keys' && !github.event.repository.fork && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)) }}
     runs-on: ubuntu-latest
     permissions: {}
     outputs:
@@ -51,7 +51,7 @@ jobs:
     name: Sign and notarize (${{ matrix.tool }})
     needs: plan
     # Non-PR first so push/dispatch never evaluates pull_request.*.
-    if: ${{ github.repository == 'lstoll/age-plugin-icloud' && !github.event.repository.fork && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)) }}
+    if: ${{ github.repository == 'lstoll/icloud-keys' && !github.event.repository.fork && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)) }}
     runs-on: macos-latest
     strategy:
       fail-fast: false

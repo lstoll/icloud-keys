@@ -1,4 +1,4 @@
-module lds.li/age-plugin-icloud
+module lds.li/icloud-keys
 
 go 1.27.1
 

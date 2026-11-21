@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"lds.li/age-plugin-icloud/internal/kc"
-	"lds.li/age-plugin-icloud/internal/platform"
+	"lds.li/icloud-keys/internal/kc"
+	"lds.li/icloud-keys/internal/platform"
 )
 
 var (
