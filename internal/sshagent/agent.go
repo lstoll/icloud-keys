@@ -63,8 +63,12 @@ var (
 )
 
 // ServeConn serves one agent client connection until it closes.
-func (a *Agent) ServeConn(c io.ReadWriter) error {
-	err := agent.ServeAgent(&conn{a: a}, c)
+func (a *Agent) ServeConn(c io.ReadWriter) error { return a.ServeConnFrom(c, "") }
+
+// ServeConnFrom is ServeConn with a description of the client process for
+// prompts and logs.
+func (a *Agent) ServeConnFrom(c io.ReadWriter, requester string) error {
+	err := agent.ServeAgent(&conn{a: a, requester: requester}, c)
 	if errors.Is(err, io.EOF) {
 		return nil
 	}
@@ -101,7 +105,7 @@ func (a *Agent) hostName(k ssh.PublicKey) string {
 func (a *Agent) authorize(k Key, r Request) error {
 	action := k.Policy.Decide(r)
 	purpose, _ := PurposeOf(r)
-	log := a.logger().With("key", k.Name, "purpose", r.Kind.String(), "namespace", r.Namespace, "forwarded", r.Forwarded)
+	log := a.logger().With("key", k.Name, "purpose", r.Kind.String(), "namespace", r.Namespace, "forwarded", r.Forwarded, "requester", r.Requester)
 	if r.Kind == KindUserAuth {
 		log = log.With("host", a.hostName(r.HostKey), "user", r.User)
 	}
@@ -173,13 +177,17 @@ func (a *Agent) reason(k Key, r Request) string {
 	if r.Forwarded {
 		s += " from a forwarded agent"
 	}
+	if r.Requester != "" {
+		s += " (requested by " + r.Requester + ")"
+	}
 	return s
 }
 
 // conn is per-connection agent state: session-bind is connection-scoped.
 type conn struct {
-	a        *Agent
-	bindings []binding
+	a         *Agent
+	requester string
+	bindings  []binding
 }
 
 var _ agent.ExtendedAgent = (*conn)(nil)
@@ -231,6 +239,7 @@ func (c *conn) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.Signatu
 // request parses sign data and attaches this connection's session binding.
 func (c *conn) request(data []byte) (Request, error) {
 	r := ParseSignData(data)
+	r.Requester = c.requester
 	for _, b := range c.bindings {
 		if b.forwarding {
 			r.Forwarded = true

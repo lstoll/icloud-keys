@@ -49,6 +49,11 @@ type Request struct {
 	// Forwarded is set when the request arrived over a forwarded agent
 	// connection (session-bind with is_forwarding).
 	Forwarded bool
+
+	// Requester describes the local client process, if known (e.g. "ssh
+	// (from git)"). Informational only: it is shown in prompts and logs,
+	// never used for policy.
+	Requester string
 }
 
 const (
