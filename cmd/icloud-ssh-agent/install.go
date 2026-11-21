@@ -14,7 +14,10 @@ import (
 	"lds.li/icloud-keys/internal/sshstore"
 )
 
-const plistName = "li.lds.icloud-ssh-agent.plist"
+const (
+	launchLabel = "li.lds.icloud-ssh-agent" // Label in the bundled LaunchAgent plist
+	plistName   = launchLabel + ".plist"
+)
 
 // requireBundle checks we're running from the .app: SMAppService registers
 // the LaunchAgent bundled in the calling app.
