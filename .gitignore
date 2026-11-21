@@ -1,5 +1,7 @@
 /age-plugin-icloud
 /age-plugin-icloud.app
+/icloud-ssh-agent
+/icloud-ssh-agent.app
 .env
 /build
 /dist

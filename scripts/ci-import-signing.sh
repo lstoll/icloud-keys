@@ -15,7 +15,7 @@ if [ -z "${DEVELOPER_ID_P12_BASE64:-}" ] || [ -z "${DEVELOPER_ID_P12_PASSWORD:-}
 fi
 
 TMP="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
-KEYCHAIN_PATH="${KEYCHAIN_PATH:-$TMP/age-plugin-icloud-signing.keychain-db}"
+KEYCHAIN_PATH="${KEYCHAIN_PATH:-$TMP/icloud-signing.keychain-db}"
 KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-$(openssl rand -base64 24)}"
 P12="$TMP/signing.p12"
 

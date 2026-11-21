@@ -1,9 +1,12 @@
 #!/bin/sh
-# Assemble a dummy .app around the Go plugin, embed a provisioning profile,
+# Assemble a dummy .app around a Go tool, embed a provisioning profile,
 # and codesign. No Xcode project.
 #
+# TOOL selects what to build: age-plugin-icloud (default) or icloud-ssh-agent.
+#
 # Local:
-#   ./scripts/sign.sh
+#   ./scripts/sign.sh                     # age-plugin-icloud
+#   TOOL=icloud-ssh-agent ./scripts/sign.sh
 # Release (Developer ID, hardened runtime, timestamp):
 #   RELEASE=1 CODESIGN_IDENTITY="Developer ID Application: …" \
 #     PROVISIONING_PROFILE=/path/to.provisionprofile TEAM_ID=MZXW569JYG \
@@ -12,9 +15,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUNDLE_ID="li.lds.age-plugin-icloud"
-APP="$ROOT/age-plugin-icloud.app"
-BIN="$APP/Contents/MacOS/age-plugin-icloud"
+TOOL="${TOOL:-age-plugin-icloud}"
+case "$TOOL" in
+age-plugin-icloud | icloud-ssh-agent) ;;
+*)
+	echo "unknown TOOL $TOOL (want age-plugin-icloud or icloud-ssh-agent)" >&2
+	exit 1
+	;;
+esac
+BUNDLE_ID="li.lds.$TOOL"
+APP="$ROOT/$TOOL.app"
+BIN="$APP/Contents/MacOS/$TOOL"
+PKG="$ROOT/packaging/$TOOL"
 RELEASE="${RELEASE:-}"
 CI="${CI:-}"
 VERSION="${VERSION:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo 0.0.0)}"
@@ -67,6 +79,16 @@ if [ -z "$TEAM_ID" ]; then
 	TEAM_ID="$(security cms -D -i "$PROFILE" | plutil -extract TeamIdentifier.0 raw -)"
 fi
 
+if [ ! -f "$PKG/Info.plist" ]; then
+	echo "missing $PKG/Info.plist" >&2
+	exit 1
+fi
+if [ ! -d "$ROOT/cmd/$TOOL" ]; then
+	echo "missing Go package $ROOT/cmd/$TOOL" >&2
+	exit 1
+fi
+
+echo "tool:     $TOOL"
 echo "identity: $IDENTITY"
 echo "team:     $TEAM_ID"
 echo "profile:  $PROFILE"
@@ -80,14 +102,21 @@ ldflags=""
 if [ -n "$RELEASE" ]; then
 	ldflags="-s -w"
 fi
-go build -trimpath -ldflags="$ldflags" -o "$unsigned" ./cmd/age-plugin-icloud
+go build -trimpath -ldflags="$ldflags" -o "$unsigned" "./cmd/$TOOL"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
-cp "$ROOT/packaging/Info.plist" "$APP/Contents/Info.plist"
+cp "$PKG/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist" >/dev/null
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist" >/dev/null
 cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+# Any other packaging/<tool>/*.plist is a LaunchAgent (for SMAppService).
+for plist in "$PKG"/*.plist; do
+	[ -f "$plist" ] || continue
+	[ "$(basename "$plist")" = Info.plist ] && continue
+	mkdir -p "$APP/Contents/Library/LaunchAgents"
+	cp "$plist" "$APP/Contents/Library/LaunchAgents/$(basename "$plist")"
+done
 cp "$unsigned" "$BIN"
 chmod +x "$BIN"
 
@@ -136,7 +165,7 @@ echo "built $BIN"
 codesign -dv --entitlements - "$BIN" 2>&1 | grep -E 'Identifier=|TeamIdentifier=|Runtime=|application-identifier|keychain-access' || true
 echo
 echo "symlink onto PATH (do not copy the Mach-O out of the .app):"
-echo "  ln -sf \"$BIN\" /usr/local/bin/age-plugin-icloud"
+echo "  ln -sf \"$BIN\" /usr/local/bin/$TOOL"
 if [ -n "$RELEASE" ]; then
 	echo "then: ./scripts/notarize.sh"
 fi

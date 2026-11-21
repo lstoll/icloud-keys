@@ -1,5 +1,8 @@
-# Signed, notarized macOS .app.
-# Snapshots (prereleases) on default-branch pushes; full releases on v* tags.
+# Signed, notarized macOS .app bundles, one per tool, built independently.
+# Snapshots (prereleases) of both tools on default-branch pushes;
+# full releases on <tool>-v* tags (age-plugin-icloud-v1.2.3,
+# icloud-ssh-agent-v1.2.3). A tag builds only its own tool. (v0.1.0 predates
+# this and is a plain v* tag.)
 #
 # Repo Actions secrets: DEVELOPER_ID_P12_BASE64, DEVELOPER_ID_P12_PASSWORD,
 # ASC_API_KEY_P8. Same-repo PRs from the owner can sign (artifact only).
@@ -14,7 +17,8 @@ on:
       - main
       - master
     tags:
-      - "v*"
+      - "age-plugin-icloud-v*"
+      - "icloud-ssh-agent-v*"
 
 permissions: {}
 
@@ -23,11 +27,35 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plan:
+    name: Plan
+    if: ${{ github.repository == 'lstoll/icloud-keys' && !github.event.repository.fork && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)) }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            case "$GITHUB_REF_NAME" in
+              icloud-ssh-agent-v*) echo 'matrix={"tool":["icloud-ssh-agent"]}' >> "$GITHUB_OUTPUT" ;;
+              age-plugin-icloud-v*) echo 'matrix={"tool":["age-plugin-icloud"]}' >> "$GITHUB_OUTPUT" ;;
+              *) echo "unexpected tag $GITHUB_REF_NAME" >&2; exit 1 ;;
+            esac
+          else
+            echo 'matrix={"tool":["age-plugin-icloud","icloud-ssh-agent"]}' >> "$GITHUB_OUTPUT"
+          fi
+
   macos:
-    name: Sign and notarize
+    name: Sign and notarize (${{ matrix.tool }})
+    needs: plan
     # Non-PR first so push/dispatch never evaluates pull_request.*.
-    if: ${{ github.repository == 'lstoll/age-plugin-icloud' && !github.event.repository.fork && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)) }}
+    if: ${{ github.repository == 'lstoll/icloud-keys' && !github.event.repository.fork && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor == github.repository_owner)) }}
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     permissions:
       contents: write # gh release create + upload zip
     steps:
@@ -40,16 +68,18 @@ jobs:
           go-version-file: go.mod
           cache: false
       - id: version
+        env:
+          TOOL: ${{ matrix.tool }}
         run: |
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
-            v="${GITHUB_REF_NAME#v}"
+            v="${GITHUB_REF_NAME#"${TOOL}-v"}"
             echo "version=$v" >> "$GITHUB_OUTPUT"
             echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           else
             v="$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
             echo "version=$v" >> "$GITHUB_OUTPUT"
-            echo "tag=snapshot-$v" >> "$GITHUB_OUTPUT"
+            echo "tag=snapshot-${TOOL}-$v" >> "$GITHUB_OUTPUT"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Dist
@@ -58,10 +88,11 @@ jobs:
           DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
           ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
           VERSION: ${{ steps.version.outputs.version }}
+          TOOL: ${{ matrix.tool }}
         run: ./scripts/dist.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: age-plugin-icloud-macos
+          name: ${{ matrix.tool }}-macos
           path: dist/*.zip
       - name: GitHub Release
         if: github.event_name != 'pull_request'
@@ -70,14 +101,15 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          TOOL: ${{ matrix.tool }}
         run: |
           if [ "$PRERELEASE" = true ]; then
-            gh release create "$TAG" dist/age-plugin-icloud-*.zip \
-              --title "snapshot ${VERSION}" \
+            gh release create "$TAG" "dist/${TOOL}-${VERSION}-darwin.zip" \
+              --title "snapshot ${TOOL} ${VERSION}" \
               --prerelease \
               --latest=false
           else
-            gh release create "$TAG" dist/age-plugin-icloud-*.zip \
+            gh release create "$TAG" "dist/${TOOL}-${VERSION}-darwin.zip" \
               --title "$TAG" \
               --generate-notes \
               --latest
@@ -94,31 +126,52 @@ jobs:
         env:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          TOOL: ${{ matrix.tool }}
         run: |
           set -euo pipefail
+          cask="Casks/${TOOL}.rb"
+          if [ ! -f "homebrew-tap/$cask" ]; then
+            echo "::notice::$cask not in lstoll/homebrew-tap yet; skipping tap bump"
+            exit 0
+          fi
           if [ -z "${TAP_GITHUB_TOKEN:-}" ]; then
             echo "TAP_GITHUB_TOKEN is required to push lstoll/homebrew-tap" >&2
             exit 1
           fi
-          zip="dist/age-plugin-icloud-${VERSION}-darwin.zip"
+          zip="dist/${TOOL}-${VERSION}-darwin.zip"
           sha="$(shasum -a 256 "$zip" | awk '{print $1}')"
-          python3 - "$VERSION" "$sha" <<'PY'
+          python3 - "$VERSION" "$sha" "$cask" "$TOOL" <<'PY'
           import pathlib, re, sys
-          version, sha = sys.argv[1], sys.argv[2]
-          path = pathlib.Path("homebrew-tap/Casks/age-plugin-icloud.rb")
+          version, sha, cask, tool = sys.argv[1:5]
+          path = pathlib.Path("homebrew-tap") / cask
           text = path.read_text()
           text, n1 = re.subn(r'version "[^"]+"', f'version "{version}"', text, count=1)
           text, n2 = re.subn(r'sha256 "[^"]+"', f'sha256 "{sha}"', text, count=1)
-          if n1 != 1 or n2 != 1:
-              raise SystemExit(f"cask replace failed: version={n1} sha256={n2}")
+          # Point the URL at this tag scheme (casks from before per-tool tags
+          # used /download/v#{version}/).
+          text, n3 = re.subn(r'/download/[^/"]*v#\{version\}/', f'/download/{tool}-v#{{version}}/', text, count=1)
+          if n1 != 1 or n2 != 1 or n3 != 1:
+              raise SystemExit(f"cask replace failed: version={n1} sha256={n2} url={n3}")
           path.write_text(text)
           PY
           git -C homebrew-tap config user.name "github-actions[bot]"
           git -C homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C homebrew-tap add Casks/age-plugin-icloud.rb
+          git -C homebrew-tap add "$cask"
           if git -C homebrew-tap diff --cached --quiet; then
             echo "cask already at ${VERSION}"
             exit 0
           fi
-          git -C homebrew-tap commit -m "age-plugin-icloud ${VERSION}"
-          git -C homebrew-tap push "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/lstoll/homebrew-tap.git" HEAD:main
+          git -C homebrew-tap commit -m "${TOOL} ${VERSION}"
+          # The other tool's release may push to the tap at the same time; each
+          # touches only its own cask, so rebase onto it and retry.
+          tap="https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/lstoll/homebrew-tap.git"
+          for attempt in 1 2 3 4 5; do
+            if git -C homebrew-tap push "$tap" HEAD:main; then
+              exit 0
+            fi
+            echo "tap push rejected (attempt ${attempt}); rebasing"
+            sleep $((attempt * 3))
+            git -C homebrew-tap pull --rebase "$tap" main
+          done
+          echo "could not push ${cask} to lstoll/homebrew-tap" >&2
+          exit 1

@@ -29,3 +29,11 @@ func LoadIdentity(name string) (age.Identity, error) {
 func LoadRecipient(name string) (age.Recipient, error) {
 	return nil, errUnavailable
 }
+
+func SetAccessControl(name string, mode AccessControlMode) (string, error) {
+	return "", errUnavailable
+}
+
+func Export(name string) (string, error) {
+	return "", errUnavailable
+}
