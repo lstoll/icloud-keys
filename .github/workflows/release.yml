@@ -59,11 +59,11 @@ jobs:
     permissions:
       contents: write # gh release create + upload zip
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: false
@@ -90,7 +90,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           TOOL: ${{ matrix.tool }}
         run: ./scripts/dist.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.tool }}-macos
           path: dist/*.zip
@@ -115,7 +115,7 @@ jobs:
               --latest
           fi
       # GITHUB_TOKEN cannot trigger on: release workflows, so bump here.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name != 'pull_request' && steps.version.outputs.prerelease != 'true'
         with:
           repository: lstoll/homebrew-tap
