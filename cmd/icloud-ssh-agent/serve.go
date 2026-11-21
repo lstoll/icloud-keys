@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -57,13 +59,47 @@ func cmdServe(args []string) error {
 	}
 	logger.Info("listening", "socket", *sock)
 
+	var once sync.Once
+	shutdown := func(msg string, args ...any) {
+		once.Do(func() {
+			logger.Info(msg, args...)
+			l.Close()
+		})
+	}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		s := <-sigs
-		logger.Info("shutting down", "signal", s.String())
-		l.Close()
+		shutdown("shutting down", "signal", s.String())
 	}()
+	// Follow brew: after an upgrade, exit so launchd starts the new version;
+	// after an uninstall, unload so launchd stops trying to start it.
+	if exe, err := os.Executable(); err == nil {
+		stop := make(chan struct{})
+		defer close(stop)
+		w := appWatch{
+			Path:      exe,
+			Every:     10 * time.Second,
+			GoneAfter: time.Minute,
+			Replaced: func() {
+				shutdown("app replaced; exiting so launchd starts the new version", "path", exe)
+			},
+			Removed: func() {
+				if os.Getenv("XPC_SERVICE_NAME") == launchLabel {
+					logger.Info("app removed; unloading the agent", "path", exe)
+					// bootout stops this process too; shutdown covers it if not.
+					if out, err := exec.Command("/bin/launchctl", "bootout",
+						fmt.Sprintf("gui/%d/%s", os.Getuid(), launchLabel)).CombinedOutput(); err != nil {
+						logger.Warn("launchctl bootout", "err", err, "output", string(out))
+					}
+				}
+				shutdown("app removed; exiting", "path", exe)
+			},
+		}
+		if err := w.Start(stop); err != nil {
+			logger.Warn("not watching for upgrades", "err", err)
+		}
+	}
 
 	for {
 		c, err := l.Accept()
