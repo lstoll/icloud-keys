@@ -85,14 +85,23 @@ Host *
   IdentityAgent ~/.ssh/icloud-ssh-agent.sock
 ```
 
-To sign Git commits, add the public key as a signing key with your Git host too. Put the `export` line in your shell profile so `ssh-keygen`, which Git uses to sign, can find the agent.
+To sign Git commits, add the public key as a signing key with your Git host too. Put the `export` line in your shell profile so `ssh-keygen`, which Git uses to sign, can find the agent. Point Git at the public key file: the agent holds the private half.
 
 ```sh
 export SSH_AUTH_SOCK="$HOME/.ssh/icloud-ssh-agent.sock"
 
+icloud-ssh-agent public-key work > ~/.ssh/work.pub
 git config --global gpg.format ssh
-git config --global user.signingkey "key::$(icloud-ssh-agent public-key work)"
+git config --global user.signingkey ~/.ssh/work.pub
 git config --global commit.gpgsign true
+```
+
+The same file picks which key a host gets in `~/.ssh/config`:
+
+```sshconfig
+Host github.com
+  IdentityFile ~/.ssh/work.pub
+  IdentitiesOnly yes
 ```
 
 ### Signing policy

@@ -67,11 +67,16 @@ shell profile:
 
   export SSH_AUTH_SOCK=%s
 
-and configure git with a key's public key:
+and sign with a key: write out its public key, and point git at the .pub
+file (ssh-keygen then asks the agent for the private half):
 
+  icloud-ssh-agent public-key NAME > ~/.ssh/NAME.pub
   git config --global gpg.format ssh
-  git config --global user.signingkey "$(icloud-ssh-agent public-key NAME)"
+  git config --global user.signingkey ~/.ssh/NAME.pub
   git config --global commit.gpgsign true
+
+The same .pub file in ~/.ssh/config (IdentityFile ~/.ssh/NAME.pub, with
+IdentitiesOnly yes) picks which key a host gets.
 `, sock, sock)
 	return nil
 }
