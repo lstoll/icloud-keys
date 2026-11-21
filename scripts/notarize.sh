@@ -1,5 +1,5 @@
 #!/bin/sh
-# Notarize and staple age-plugin-icloud.app (Developer ID / Gatekeeper).
+# Notarize and staple <TOOL>.app (TOOL defaults to age-plugin-icloud) (Developer ID / Gatekeeper).
 #
 # App Store Connect API key (CI):
 #   APPLE_API_KEY_ID  APPLE_API_ISSUER  APPLE_API_KEY_P8
@@ -8,13 +8,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="${1:-$ROOT/age-plugin-icloud.app}"
+TOOL="${TOOL:-age-plugin-icloud}"
+APP="${1:-$ROOT/$TOOL.app}"
 if [ ! -d "$APP" ]; then
 	echo "missing $APP" >&2
 	exit 1
 fi
 
-ZIP="${NOTARIZE_ZIP:-$ROOT/dist/age-plugin-icloud.zip}"
+ZIP="${NOTARIZE_ZIP:-$ROOT/dist/$TOOL.zip}"
 mkdir -p "$(dirname "$ZIP")"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
