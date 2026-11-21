@@ -40,8 +40,9 @@ type Prompter interface {
 type Agent struct {
 	Store    Store
 	Prompter Prompter
-	// HostName names a host key for prompts. Defaults to its fingerprint.
-	HostName func(ssh.PublicKey) string
+	// HostName names a host key, best name first: prompts show the first,
+	// the log records them all. Defaults to the key's fingerprint.
+	HostName func(ssh.PublicKey) []string
 	// Now defaults to time.Now.
 	Now    func() time.Time
 	Logger *slog.Logger
@@ -90,16 +91,23 @@ func (a *Agent) now() time.Time {
 	return time.Now()
 }
 
-func (a *Agent) hostName(k ssh.PublicKey) string {
+// hostNames returns the name to show for a host key, and any other names it
+// has.
+func (a *Agent) hostNames(k ssh.PublicKey) (name string, aliases []string) {
 	if k == nil {
-		return "an SSH server"
+		return "an SSH server", nil
 	}
 	if a.HostName != nil {
-		if n := a.HostName(k); n != "" {
-			return n
+		if ns := a.HostName(k); len(ns) > 0 {
+			return ns[0], ns[1:]
 		}
 	}
-	return ssh.FingerprintSHA256(k)
+	return ssh.FingerprintSHA256(k), nil
+}
+
+func (a *Agent) hostName(k ssh.PublicKey) string {
+	name, _ := a.hostNames(k)
+	return name
 }
 
 // authorize applies the key's policy to a request, prompting if needed.
@@ -108,7 +116,13 @@ func (a *Agent) authorize(k Key, r Request) error {
 	purpose, _ := PurposeOf(r)
 	log := a.logger().With("key", k.Name, "purpose", r.Kind.String(), "namespace", r.Namespace, "forwarded", r.Forwarded, "requester", r.Requester)
 	if r.Kind == KindUserAuth {
-		log = log.With("host", a.hostName(r.HostKey), "user", r.User)
+		name, aliases := a.hostNames(r.HostKey)
+		log = log.With("host", name, "user", r.User)
+		if len(aliases) > 0 {
+			// Other names known_hosts has for this key; if they aren't all
+			// the same machine, the host key is shared.
+			log = log.With("aliases", strings.Join(aliases, ","))
+		}
 	}
 
 	switch action {

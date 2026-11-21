@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -291,11 +292,11 @@ func TestPrompt5mWindow(t *testing.T) {
 func TestSessionBind(t *testing.T) {
 	h := newHarness(t, DefaultPolicy())
 	host := newSigner(t)
-	h.agent.HostName = func(k ssh.PublicKey) string {
+	h.agent.HostName = func(k ssh.PublicKey) []string {
 		if string(k.Marshal()) == string(host.PublicKey().Marshal()) {
-			return "github.com"
+			return []string{"github.com"}
 		}
-		return ""
+		return nil
 	}
 	sid := []byte("session-1")
 
@@ -539,14 +540,50 @@ func TestKnownHostsNamer(t *testing.T) {
 			line("other.example", other),
 	), 0o600))
 	name := KnownHostsNamer(filepath.Join(dir, "missing"), kh)
-	if got := name(host); got != "git.example:2222" {
+	if got := name(host); !slices.Equal(got, []string{"git.example:2222", "1.2.3.4"}) {
 		t.Errorf("host = %q", got)
 	}
-	if got := name(other); got != "other.example" {
+	if got := name(other); !slices.Equal(got, []string{"other.example"}) {
 		t.Errorf("other = %q", got)
 	}
-	if got := name(newSigner(t).PublicKey()); got != "" {
+	if got := name(newSigner(t).PublicKey()); got != nil {
 		t.Errorf("unknown = %q", got)
+	}
+}
+
+// ssh adds a line per name a host is reached by; an IP seen first (say, a
+// VPN address) shouldn't hide the host's name.
+func TestKnownHostsNamerPrefersNames(t *testing.T) {
+	host := newSigner(t).PublicKey()
+	v6 := newSigner(t).PublicKey()
+	ipOnly := newSigner(t).PublicKey()
+	line := func(hosts string, k ssh.PublicKey) string {
+		return hosts + " " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k))) + "\n"
+	}
+	dir := t.TempDir()
+	global := filepath.Join(dir, "ssh_known_hosts")
+	user := filepath.Join(dir, "known_hosts")
+	must(t, os.WriteFile(user, []byte(
+		line("198.51.100.7", host)+
+			line("[198.51.100.8]:2222", host)+
+			line("[2001:db8::1]:22,2001:db8::2", v6)+
+			line("10.0.0.1,10.0.0.2", ipOnly),
+	), 0o600))
+	// The name is only in a later file.
+	must(t, os.WriteFile(global, []byte(line("build1.example,198.51.100.7", host)+line("box6.example", v6)), 0o600))
+	name := KnownHostsNamer(user, global)
+	for _, tc := range []struct {
+		key  ssh.PublicKey
+		want []string
+	}{
+		// Best name first, the rest in file order, duplicates dropped.
+		{host, []string{"build1.example", "198.51.100.7", "198.51.100.8:2222"}},
+		{v6, []string{"box6.example", "[2001:db8::1]:22", "2001:db8::2"}},
+		{ipOnly, []string{"10.0.0.1", "10.0.0.2"}},
+	} {
+		if got := name(tc.key); !slices.Equal(got, tc.want) {
+			t.Errorf("names = %q, want %q", got, tc.want)
+		}
 	}
 }
 
