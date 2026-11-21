@@ -3,13 +3,34 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
+	"syscall"
 	"time"
 
 	"filippo.io/age"
 	"filippo.io/age/plugin"
 	"lds.li/icloud-keys/internal/identity"
+	"lds.li/icloud-keys/internal/oslog"
+	"lds.li/icloud-keys/internal/proc"
 )
+
+const (
+	logSubsystem = identity.BundleID
+	logCategory  = "plugin"
+)
+
+// setupLog sends identity events (unlocks, exports, policy changes) to the
+// unified log, tagged with the program that ran the plugin, e.g. "age (from
+// sops)". Never stderr: in plugin mode that's age's, and the user's.
+func setupLog() {
+	h, err := oslog.Open(logSubsystem, logCategory, nil)
+	if err != nil {
+		slog.SetDefault(slog.New(slog.DiscardHandler))
+		return
+	}
+	slog.SetDefault(slog.New(h).With("requester", proc.Describe(os.Getppid())))
+}
 
 func main() {
 	generate := flag.Bool("generate", false, "generate a new identity in iCloud Keychain")
@@ -19,6 +40,9 @@ func main() {
 	setAccessControl := flag.Bool("set-access-control", false, "change a named identity's --access-control (always asks for Touch ID)")
 	name := flag.String("name", identity.DefaultName, "identity name")
 	accessControl := flag.String("access-control", string(identity.AccessControl5m), "`none`, `everyTime` (Touch ID each decrypt), or `5m` (Touch ID, skip 5 minutes on this Mac)")
+	logs := flag.Bool("logs", false, "show the plugin's unified log entries (decrypts, exports, changes)")
+	follow := flag.Bool("follow", false, "with --logs, stream new entries")
+	last := flag.String("last", "1d", "with --logs, how far back to show, e.g. 30m, 2h, 7d")
 
 	p, err := plugin.New(identity.PluginName)
 	if err != nil {
@@ -34,6 +58,7 @@ Usage:
   age-plugin-icloud --delete --name NAME
   age-plugin-icloud --set-access-control --name NAME --access-control=none|everyTime|5m
   age-plugin-icloud --export --name NAME
+  age-plugin-icloud --logs [--follow] [--last 1d]
 
 age invokes this plugin as age-plugin-icloud --age-plugin=identity-v1.
 
@@ -52,13 +77,13 @@ age invokes this plugin as age-plugin-icloud --age-plugin=identity-v1.
 	})
 
 	n := 0
-	for _, set := range []bool{*generate, *list, *delete, *export, *setAccessControl} {
+	for _, set := range []bool{*generate, *list, *delete, *export, *setAccessControl, *logs} {
 		if set {
 			n++
 		}
 	}
 	if n > 1 {
-		fatal(fmt.Errorf("specify only one of --generate, --list, --delete, --export, --set-access-control"))
+		fatal(fmt.Errorf("specify only one of --generate, --list, --delete, --export, --set-access-control, --logs"))
 	}
 	if flag.NArg() > 0 && n > 0 {
 		fatal(fmt.Errorf("unexpected arguments: %v", flag.Args()))
@@ -74,7 +99,14 @@ age invokes this plugin as age-plugin-icloud --age-plugin=identity-v1.
 		}
 	})
 
+	setupLog()
+
 	switch {
+	case *logs:
+		argv := oslog.ShowArgs(logSubsystem, logCategory, *follow, *last, false)
+		if err := syscall.Exec(argv[0], argv, os.Environ()); err != nil {
+			fatal(fmt.Errorf("run %s: %w", argv[0], err))
+		}
 	case *generate:
 		mode, err := identity.ParseAccessControl(*accessControl)
 		if err != nil {

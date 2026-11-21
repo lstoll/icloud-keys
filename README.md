@@ -67,6 +67,8 @@ age-plugin-icloud --set-access-control --name work --access-control=everyTime
 
 `age-plugin-icloud --delete --name work` removes the identity from iCloud Keychain and syncs that deletion to your other devices.
 
+Every decrypt, export, and access-control change goes to the macOS unified log, with the program that ran the plugin (for example `age (from sops)`) and whether Touch ID was needed. Run `age-plugin-icloud --logs` to see the last day, or add `--follow` or `--last 2h`.
+
 ## icloud-ssh-agent
 
 ### Set up

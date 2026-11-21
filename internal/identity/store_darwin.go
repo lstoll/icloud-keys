@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -64,6 +65,7 @@ func Generate(name string, mode AccessControlMode) (string, error) {
 	if err := s.Create(name, []byte(id.String()), label(name), generic); err != nil {
 		return "", err
 	}
+	slog.Info("generated identity", "name", name, "access", mode)
 	return IdentityFile(name, recipient, time.Now(), mode), nil
 }
 
@@ -107,6 +109,7 @@ func Delete(name string) error {
 	if err := s.Delete(name); err != nil {
 		return err
 	}
+	slog.Info("deleted identity", "name", name)
 	mu.Lock()
 	delete(secrets, name)
 	mu.Unlock()
@@ -133,8 +136,10 @@ func SetAccessControl(name string, mode AccessControlMode) (string, error) {
 		return "", fmt.Errorf("identity %q: %w", name, err)
 	}
 	if err := kc.Confirm(fmt.Sprintf("change access control for the “%s” identity to %s", name, mode), false); err != nil {
+		slog.Warn("access control change not approved", "name", name, "from", a.mode(), "to", mode, "err", err)
 		return "", err
 	}
+	from := a.mode()
 	a.AccessControl = string(mode)
 	a.PresenceAt = nil // a new policy starts with no approvals
 	raw, err := json.Marshal(a)
@@ -144,6 +149,7 @@ func SetAccessControl(name string, mode AccessControlMode) (string, error) {
 	if err := s.SetAttrs(name, it.Label, raw); err != nil {
 		return "", err
 	}
+	slog.Info("changed access control", "name", name, "from", from, "to", mode)
 	return IdentityFile(name, a.Recipient, time.Time{}, mode), nil
 }
 
@@ -161,12 +167,14 @@ func Export(name string) (string, error) {
 		return "", err
 	}
 	if err := kc.Confirm(fmt.Sprintf("export the secret key of the “%s” identity", name), false); err != nil {
+		slog.Warn("export not approved", "name", name, "err", err)
 		return "", err
 	}
 	secret, err := s.Secret(name)
 	if err != nil {
 		return "", err
 	}
+	slog.Warn("exported secret key", "name", name)
 	return strings.TrimSpace(string(secret)), nil
 }
 
@@ -245,11 +253,20 @@ func loadSecretLocked(name string) (*age.HybridIdentity, error) {
 		return nil, fmt.Errorf("identity %q: %w", name, err)
 	}
 	mode := a.mode()
+	approval := "not required"
 	if mode.prompts() {
 		machine := machineID()
-		if !(mode == AccessControl5m && a.presenceFresh(machine, time.Now())) {
-			if err := requireUserPresenceLocked(presenceReason(name), mode == AccessControl5m); err != nil {
+		if mode == AccessControl5m && a.presenceFresh(machine, time.Now()) {
+			approval = "within 5m"
+		} else {
+			prompted, err := requireUserPresenceLocked(presenceReason(name), mode == AccessControl5m)
+			if err != nil {
+				slog.Warn("decrypt not approved", "name", name, "access", mode, "err", err)
 				return nil, err
+			}
+			approval = "touch id"
+			if !prompted {
+				approval = "earlier in this run"
 			}
 			if mode == AccessControl5m {
 				stampPresence(s, name, machine)
@@ -265,6 +282,7 @@ func loadSecretLocked(name string) (*age.HybridIdentity, error) {
 		return nil, fmt.Errorf("parse identity %q: %w", name, err)
 	}
 	secrets[name] = id
+	slog.Info("unlocked identity", "name", name, "access", mode, "approval", approval)
 	return id, nil
 }
 
@@ -289,16 +307,16 @@ func stampPresence(s *kc.Store, name, machine string) {
 }
 
 // requireUserPresenceLocked prompts at most once per process: age -j icloud
-// may load several identities for one decrypt.
-func requireUserPresenceLocked(reason string, allowUnlockReuse bool) error {
+// may load several identities for one decrypt. It reports whether it prompted.
+func requireUserPresenceLocked(reason string, allowUnlockReuse bool) (bool, error) {
 	if presenceOK {
-		return nil
+		return false, nil
 	}
 	if err := kc.Confirm(reason, allowUnlockReuse); err != nil {
-		return err
+		return false, err
 	}
 	presenceOK = true
-	return nil
+	return true, nil
 }
 
 func presenceReason(name string) string {
