@@ -116,7 +116,7 @@ Each key has its own policy. By default, the agent allows signatures in the `git
 
 Use `allow` to sign immediately, `prompt` to ask each time, `prompt-5m` to reuse approval for the same key and purpose for five minutes, or `deny` to refuse. The agent also refuses unlisted purposes and requests it can't classify.
 
-When an SSH client sends a session binding, the agent checks login requests against that session. It looks up the host key in `known_hosts` for the prompt and falls back to the key's fingerprint if there's no match. Connections marked as forwarded in a session binding require a fresh approval for any permitted signature. With forwarding that doesn't send a binding, the agent applies the usual policy. Under launchd, signing decisions go to `~/Library/Logs/icloud-ssh-agent.log`.
+When an SSH client sends a session binding, the agent checks login requests against that session. It looks up the host key in `known_hosts` for the prompt and falls back to the key's fingerprint if there's no match. Connections marked as forwarded in a session binding require a fresh approval for any permitted signature. With forwarding that doesn't send a binding, the agent applies the usual policy. Under launchd, every signing decision goes to the macOS unified log. Run `icloud-ssh-agent logs` to see the last day, `logs -f` to follow, or `logs --last 2h` for a different window. In Console.app, filter on the subsystem `li.lds.icloud-ssh-agent`.
 
 ### Manage keys
 
@@ -133,6 +133,6 @@ Changing a policy or exporting a key requires approval. Use a new filename for t
 
 ## Build from source
 
-Run `TOOL=age-plugin-icloud ./scripts/sign.sh` or `TOOL=icloud-ssh-agent ./scripts/sign.sh` to build an app with your Apple Development signing identity. You'll need a provisioning profile for the matching bundle ID (`li.lds.age-plugin-icloud` or `li.lds.icloud-ssh-agent`).
+Run `TOOL=age-plugin-icloud ./scripts/sign.sh` or `TOOL=icloud-ssh-agent ./scripts/sign.sh` to build an app with your Apple Development signing identity. Building `icloud-ssh-agent` needs Xcode or its command line tools, because it uses cgo for the unified log. You'll need a provisioning profile for the matching bundle ID (`li.lds.age-plugin-icloud` or `li.lds.icloud-ssh-agent`).
 
 With Developer ID and notarization credentials configured, run `./scripts/dist.sh` with the same `TOOL` to sign, notarize, and zip the app. The release workflow builds each tool from its own version tags.
