@@ -29,6 +29,7 @@ Usage:
   icloud-ssh-agent export NAME                            (asks for Touch ID)
   icloud-ssh-agent delete NAME
   icloud-ssh-agent install | uninstall | status
+  icloud-ssh-agent logs [-f] [--last DURATION]            (default --last 1d)
   icloud-ssh-agent serve [--socket PATH]
 
 POLICY is a comma-separated list of purpose=action:
@@ -69,6 +70,8 @@ func main() {
 		err = cmdUninstall(args)
 	case "status":
 		err = cmdStatus(args)
+	case "logs", "log":
+		err = cmdLogs(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return

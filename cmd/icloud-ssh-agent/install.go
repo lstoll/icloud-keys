@@ -124,6 +124,7 @@ func cmdStatus(args []string) error {
 		return err
 	}
 	fmt.Printf("keys:       %d\n", len(keys))
+	fmt.Println("logs:       icloud-ssh-agent logs [-f]")
 	if len(keys) == 0 {
 		return errors.New("no keys; run icloud-ssh-agent generate NAME")
 	}

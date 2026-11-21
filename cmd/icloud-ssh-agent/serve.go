@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/term"
 	"lds.li/icloud-keys/internal/kc"
+	"lds.li/icloud-keys/internal/oslog"
 	"lds.li/icloud-keys/internal/sshagent"
 	"lds.li/icloud-keys/internal/sshstore"
 )
@@ -123,11 +124,22 @@ func listen(path string) (net.Listener, error) {
 	return l, nil
 }
 
-// openLog logs to stderr in a terminal, and otherwise (under launchd) to
-// ~/Library/Logs/icloud-ssh-agent.log, so silent signatures leave a trace.
+// Unified log subsystem and category; `icloud-ssh-agent logs` reads them.
+const (
+	logSubsystem = sshstore.Service
+	logCategory  = "agent"
+)
+
+// openLog logs to stderr in a terminal, and otherwise (under launchd) to the
+// unified log, so silent signatures leave a trace. If the unified log isn't
+// available it falls back to ~/Library/Logs/icloud-ssh-agent.log.
 func openLog() (*slog.Logger, func(), error) {
 	if term.IsTerminal(int(os.Stderr.Fd())) {
 		return slog.New(slog.NewTextHandler(os.Stderr, nil)), func() {}, nil
+	}
+	h, oerr := oslog.Open(logSubsystem, logCategory, nil)
+	if oerr == nil {
+		return slog.New(h), func() {}, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -141,5 +153,7 @@ func openLog() (*slog.Logger, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return slog.New(slog.NewTextHandler(f, nil)), func() { f.Close() }, nil
+	l := slog.New(slog.NewTextHandler(f, nil))
+	l.Warn("unified log unavailable; logging to this file", "err", oerr)
+	return l, func() { f.Close() }, nil
 }
