@@ -15,6 +15,8 @@ func main() {
 	generate := flag.Bool("generate", false, "generate a new identity in iCloud Keychain")
 	list := flag.Bool("list", false, "reprint identity files from Keychain attributes")
 	delete := flag.Bool("delete", false, "delete a named identity from iCloud Keychain")
+	export := flag.Bool("export", false, "print a named identity's secret key (always asks for Touch ID)")
+	setAccessControl := flag.Bool("set-access-control", false, "change a named identity's --access-control (always asks for Touch ID)")
 	name := flag.String("name", identity.DefaultName, "identity name")
 	accessControl := flag.String("access-control", string(identity.AccessControl5m), "`none`, `everyTime` (Touch ID each decrypt), or `5m` (Touch ID, skip 5 minutes on this Mac)")
 
@@ -30,6 +32,8 @@ Usage:
   age-plugin-icloud --generate [--name NAME] [--access-control=none|everyTime|5m]
   age-plugin-icloud --list [--name NAME]
   age-plugin-icloud --delete --name NAME
+  age-plugin-icloud --set-access-control --name NAME --access-control=none|everyTime|5m
+  age-plugin-icloud --export --name NAME
 
 age invokes this plugin as age-plugin-icloud --age-plugin=identity-v1.
 
@@ -48,26 +52,25 @@ age invokes this plugin as age-plugin-icloud --age-plugin=identity-v1.
 	})
 
 	n := 0
-	if *generate {
-		n++
-	}
-	if *list {
-		n++
-	}
-	if *delete {
-		n++
+	for _, set := range []bool{*generate, *list, *delete, *export, *setAccessControl} {
+		if set {
+			n++
+		}
 	}
 	if n > 1 {
-		fatal(fmt.Errorf("specify only one of --generate, --list, --delete"))
+		fatal(fmt.Errorf("specify only one of --generate, --list, --delete, --export, --set-access-control"))
 	}
 	if flag.NArg() > 0 && n > 0 {
 		fatal(fmt.Errorf("unexpected arguments: %v", flag.Args()))
 	}
 
-	nameSet := false
+	nameSet, accessControlSet := false, false
 	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "name" {
+		switch f.Name {
+		case "name":
 			nameSet = true
+		case "access-control":
+			accessControlSet = true
 		}
 	})
 
@@ -110,6 +113,28 @@ age invokes this plugin as age-plugin-icloud --age-plugin=identity-v1.
 		if err := identity.Delete(*name); err != nil {
 			fatal(err)
 		}
+	case *export:
+		if !nameSet {
+			fatal(fmt.Errorf("--export requires --name"))
+		}
+		secret, err := identity.Export(*name)
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(secret)
+	case *setAccessControl:
+		if !nameSet || !accessControlSet {
+			fatal(fmt.Errorf("--set-access-control requires --name and --access-control"))
+		}
+		mode, err := identity.ParseAccessControl(*accessControl)
+		if err != nil {
+			fatal(err)
+		}
+		file, err := identity.SetAccessControl(*name, mode)
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Print(file)
 	default:
 		sm := flag.Lookup("age-plugin")
 		if sm != nil && sm.Value.String() != "" {

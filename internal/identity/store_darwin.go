@@ -13,61 +13,29 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"lds.li/age-plugin-icloud/internal/kc"
 	"lds.li/age-plugin-icloud/internal/platform"
-	"lds.li/keychain"
 )
 
 var (
 	mu         sync.Mutex
 	secrets    = map[string]*age.HybridIdentity{}
-	auth       *keychain.AuthContext
 	presenceOK bool
 	storeOnce  sync.Once
-	kc         *keychain.PasswordStore
+	st         *kc.Store
 	storeErr   error
 )
 
-// store returns the synced data protection keychain store for identities.
-func store() (*keychain.PasswordStore, error) {
+func store() (*kc.Store, error) {
 	storeOnce.Do(func() {
-		team, err := keychain.TeamIdentifier()
-		if err != nil {
-			storeErr = fmt.Errorf("age-plugin-icloud must be signed with a stable Apple Team ID (see README): %w", err)
-			return
-		}
-		kc, err = keychain.NewPasswordStore(keychain.PasswordStoreOptions{
-			Service:        Service,
-			Backend:        keychain.BackendDataProtection,
-			Synchronizable: true,
-			AccessGroup:    team + "." + BundleID,
-			AccessControl:  keychain.AccessControl{Protection: keychain.AccessibleAfterFirstUnlock},
+		st, storeErr = kc.Open(kc.Options{
+			Service:  Service,
+			BundleID: BundleID,
+			App:      "age-plugin-icloud",
+			Noun:     "identity",
 		})
-		if err != nil {
-			storeErr = fmt.Errorf("keychain store: %w", err)
-		}
 	})
-	return kc, storeErr
-}
-
-func wrapKeychain(op string, err error) error {
-	var kcErr *keychain.Error
-	if errors.As(err, &kcErr) {
-		switch kcErr.Code() {
-		case keychain.ErrorCodeMissingEntitlement:
-			return fmt.Errorf("%s: iCloud Keychain requires a signed .app with com.apple.application-identifier (see README): %w", op, err)
-		case keychain.ErrorCodeItemNotFound:
-			return fmt.Errorf("%s: identity not found", op)
-		case keychain.ErrorCodeDuplicateItem:
-			return fmt.Errorf("%s: an identity with this name already exists", op)
-		case keychain.ErrorCodeUserCanceled:
-			return fmt.Errorf("%s: Touch ID or passcode cancelled", op)
-		case keychain.ErrorCodeAuthFailed:
-			return fmt.Errorf("%s: Touch ID or passcode failed", op)
-		case keychain.ErrorCodeInteractionNotAllowed:
-			return fmt.Errorf("%s: Touch ID needs a GUI (use --access-control=none over SSH): %w", op, err)
-		}
-	}
-	return fmt.Errorf("%s: %w", op, err)
+	return st, storeErr
 }
 
 // Generate creates a new MLKEM768-X25519 identity in iCloud Keychain and
@@ -93,17 +61,13 @@ func Generate(name string, mode AccessControlMode) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	attrs := &keychain.PasswordAttributes{
-		Label:             fmt.Sprintf("age-plugin-icloud (%s)", name),
-		GenericAttributes: generic,
+	if err := s.Create(name, []byte(id.String()), label(name), generic); err != nil {
+		return "", err
 	}
-	if err := s.Create(name, []byte(id.String()), attrs); err != nil {
-		return "", wrapKeychain("create identity", err)
-	}
-
 	return IdentityFile(name, recipient, time.Now(), mode), nil
 }
+
+func label(name string) string { return fmt.Sprintf("age-plugin-icloud (%s)", name) }
 
 // List returns names and recipients without reading secrets.
 func List() ([]Item, error) {
@@ -111,18 +75,18 @@ func List() ([]Item, error) {
 	if err != nil {
 		return nil, err
 	}
-	passwords, err := s.List()
+	stored, err := s.List()
 	if err != nil {
-		return nil, wrapKeychain("list identities", err)
+		return nil, err
 	}
-	items := make([]Item, 0, len(passwords))
-	for _, p := range passwords {
-		a, err := parsePublicAttrs(p.GenericAttributes)
+	items := make([]Item, 0, len(stored))
+	for _, it := range stored {
+		a, err := parsePublicAttrs(it.Attrs)
 		if err != nil {
-			return nil, fmt.Errorf("identity %q: %w", p.Account, err)
+			return nil, fmt.Errorf("identity %q: %w", it.Name, err)
 		}
 		items = append(items, Item{
-			Name:          p.Account,
+			Name:          it.Name,
 			Recipient:     a.Recipient,
 			AccessControl: a.mode(),
 		})
@@ -140,17 +104,70 @@ func Delete(name string) error {
 	if err != nil {
 		return err
 	}
-	// Delete of a missing account succeeds; check first to report it.
-	if _, err := s.Metadata(name); err != nil {
-		return wrapKeychain("delete identity "+name, err)
-	}
 	if err := s.Delete(name); err != nil {
-		return wrapKeychain("delete identity "+name, err)
+		return err
 	}
 	mu.Lock()
 	delete(secrets, name)
 	mu.Unlock()
 	return nil
+}
+
+// SetAccessControl changes a stored identity's access control. It always asks
+// for Touch ID first: the setting syncs to every device, and loosening it is
+// exactly what an attacker would want. Returns the updated identity file.
+func SetAccessControl(name string, mode AccessControlMode) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	s, err := store()
+	if err != nil {
+		return "", err
+	}
+	it, err := s.Item(name)
+	if err != nil {
+		return "", err
+	}
+	a, err := parsePublicAttrs(it.Attrs)
+	if err != nil {
+		return "", fmt.Errorf("identity %q: %w", name, err)
+	}
+	if err := kc.Confirm(fmt.Sprintf("change access control for the “%s” identity to %s", name, mode), false); err != nil {
+		return "", err
+	}
+	a.AccessControl = string(mode)
+	a.PresenceAt = nil // a new policy starts with no approvals
+	raw, err := json.Marshal(a)
+	if err != nil {
+		return "", err
+	}
+	if err := s.SetAttrs(name, it.Label, raw); err != nil {
+		return "", err
+	}
+	return IdentityFile(name, a.Recipient, time.Time{}, mode), nil
+}
+
+// Export returns the identity's secret key (AGE-SECRET-KEY-PQ-…). It always
+// asks for Touch ID, whatever the identity's access control.
+func Export(name string) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	s, err := store()
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.Item(name); err != nil {
+		return "", err
+	}
+	if err := kc.Confirm(fmt.Sprintf("export the secret key of the “%s” identity", name), false); err != nil {
+		return "", err
+	}
+	secret, err := s.Secret(name)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(secret)), nil
 }
 
 // LoadIdentity returns a Keychain-backed HybridIdentity. An empty name loads
@@ -191,17 +208,17 @@ func LoadRecipient(name string) (age.Recipient, error) {
 	if err != nil {
 		return nil, err
 	}
-	attrs, err := s.Metadata(name)
+	it, err := s.Item(name)
 	if err != nil {
-		if errors.Is(err, keychain.ErrItemNotFound) {
+		if errors.Is(err, kc.ErrNotFound) {
 			if name == DefaultName {
 				return nil, errors.New("no default identity; run age-plugin-icloud --generate")
 			}
 			return nil, fmt.Errorf("no identity named %q", name)
 		}
-		return nil, wrapKeychain("load recipient "+name, err)
+		return nil, err
 	}
-	a, err := parsePublicAttrs(attrs.GenericAttributes)
+	a, err := parsePublicAttrs(it.Attrs)
 	if err != nil {
 		return nil, fmt.Errorf("identity %q: %w", name, err)
 	}
@@ -219,11 +236,11 @@ func loadSecretLocked(name string) (*age.HybridIdentity, error) {
 	if err != nil {
 		return nil, err
 	}
-	attrs, err := s.Metadata(name)
+	it, err := s.Item(name)
 	if err != nil {
-		return nil, wrapKeychain("load identity "+name, err)
+		return nil, err
 	}
-	a, err := parsePublicAttrs(attrs.GenericAttributes)
+	a, err := parsePublicAttrs(it.Attrs)
 	if err != nil {
 		return nil, fmt.Errorf("identity %q: %w", name, err)
 	}
@@ -237,18 +254,14 @@ func loadSecretLocked(name string) (*age.HybridIdentity, error) {
 			if mode == AccessControl5m {
 				a.stampPresence(machine, time.Now())
 				if raw, err := json.Marshal(a); err == nil {
-					// SetAttributes replaces the label too, so carry it over.
-					_ = s.SetAttributes(name, keychain.PasswordAttributes{
-						Label:             attrs.Label,
-						GenericAttributes: raw,
-					})
+					_ = s.SetAttrs(name, it.Label, raw)
 				}
 			}
 		}
 	}
-	secret, err := s.Get(name)
+	secret, err := s.Secret(name)
 	if err != nil {
-		return nil, wrapKeychain("load identity "+name, err)
+		return nil, err
 	}
 	id, err := age.ParseHybridIdentity(strings.TrimSpace(string(secret)))
 	if err != nil {
@@ -258,24 +271,14 @@ func loadSecretLocked(name string) (*age.HybridIdentity, error) {
 	return id, nil
 }
 
+// requireUserPresenceLocked prompts at most once per process: age -j icloud
+// may load several identities for one decrypt.
 func requireUserPresenceLocked(reason string, allowUnlockReuse bool) error {
 	if presenceOK {
 		return nil
 	}
-	if auth == nil {
-		ctx, err := keychain.NewAuthContext()
-		if err != nil {
-			return fmt.Errorf("LAContext: %w", err)
-		}
-		if allowUnlockReuse {
-			if err := ctx.SetMaximumTouchIDReuseDuration(); err != nil {
-				return err
-			}
-		}
-		auth = ctx
-	}
-	if err := auth.EvaluatePolicy(keychain.AuthPolicyDeviceOwnerAuthentication, reason); err != nil {
-		return wrapKeychain("authenticate", err)
+	if err := kc.Confirm(reason, allowUnlockReuse); err != nil {
+		return err
 	}
 	presenceOK = true
 	return nil
