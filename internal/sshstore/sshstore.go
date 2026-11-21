@@ -106,7 +106,16 @@ func (s *Store) Import(name string, pemBytes []byte, passphrase func() ([]byte, 
 		if perr != nil {
 			return sshagent.Key{}, perr
 		}
-		raw, err = ssh.ParseRawPrivateKeyWithPassphrase(pemBytes, pw)
+		if _, ok := aeadCipher(pemBytes); ok {
+			// x/crypto can't decrypt these; do it here, then parse.
+			plain, derr := decryptAEADKey(pemBytes, pw)
+			if derr != nil {
+				return sshagent.Key{}, fmt.Errorf("parse private key: %w", derr)
+			}
+			raw, err = ssh.ParseRawPrivateKey(plain)
+		} else {
+			raw, err = ssh.ParseRawPrivateKeyWithPassphrase(pemBytes, pw)
+		}
 	}
 	if err != nil {
 		return sshagent.Key{}, fmt.Errorf("parse private key: %w", err)

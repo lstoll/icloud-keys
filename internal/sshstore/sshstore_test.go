@@ -7,6 +7,9 @@ import (
 	"crypto/rsa"
 	"encoding/pem"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -253,5 +256,64 @@ func TestDuplicateKeyRejected(t *testing.T) {
 	}
 	if len(b.items) != 1 {
 		t.Fatalf("items = %d", len(b.items))
+	}
+}
+
+// TestImportAEADCiphers imports keys encrypted by the real ssh-keygen with the
+// OpenSSH AEAD ciphers x/crypto can't decrypt, and checks the imported key
+// matches ssh-keygen's public key.
+func TestImportAEADCiphers(t *testing.T) {
+	keygen, err := exec.LookPath("ssh-keygen")
+	if err != nil {
+		t.Skip("ssh-keygen not found")
+	}
+	for _, c := range []string{ssh.CipherAES128GCM, ssh.CipherAES256GCM, ssh.CipherChaCha20Poly1305} {
+		for _, typ := range []string{"ed25519", "ecdsa", "rsa"} {
+			t.Run(c+"/"+typ, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "id")
+				out, err := exec.Command(keygen, "-q", "-t", typ, "-N", "correct horse", "-Z", c, "-f", path).CombinedOutput()
+				if err != nil {
+					t.Fatalf("ssh-keygen: %v\n%s", err, out)
+				}
+				pemBytes, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, ok := aeadCipher(pemBytes); !ok || got != c {
+					t.Fatalf("aeadCipher = %q, %v", got, ok)
+				}
+				pubLine, err := os.ReadFile(path + ".pub")
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, _, _, _, err := ssh.ParseAuthorizedKey(pubLine)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				s, _, _ := newStore()
+				if _, err := s.Import("bad", pemBytes, func() ([]byte, error) { return []byte("wrong"), nil }, sshagent.DefaultPolicy()); err == nil {
+					t.Fatal("imported with wrong passphrase")
+				}
+				k, err := s.Import("k", pemBytes, func() ([]byte, error) { return []byte("correct horse"), nil }, sshagent.DefaultPolicy())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(k.Public.Marshal()) != string(want.Marshal()) {
+					t.Fatal("imported public key differs from ssh-keygen's")
+				}
+				signer, err := s.Signer("k")
+				if err != nil {
+					t.Fatal(err)
+				}
+				sig, err := signer.Sign(rand.Reader, []byte("data"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := want.Verify([]byte("data"), sig); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
 	}
 }
