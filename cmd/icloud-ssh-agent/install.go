@@ -130,3 +130,41 @@ func cmdStatus(args []string) error {
 	}
 	return nil
 }
+
+// cmdReload re-registers the login item if it's registered, so launchd starts
+// the current copy of the app. The Homebrew cask runs it after installing:
+// its uninstall step (which brew also runs on upgrade) unloads the agent, and
+// nothing else would start it again before the next login. Not registered
+// means the user hasn't run install, so it does nothing.
+func cmdReload(args []string) error {
+	if _, err := parse(flag.NewFlagSet("reload", flag.ContinueOnError), args, 0); err != nil {
+		return err
+	}
+	if err := requireBundle(); err != nil {
+		return err
+	}
+	st, err := launchsvc.StatusOf(plistName)
+	if err != nil {
+		return err
+	}
+	if st != launchsvc.Enabled && st != launchsvc.RequiresApproval {
+		return nil
+	}
+	// Unregister first: registering an already-registered service doesn't
+	// reload it, and a fresh registration also updates launchd's record of
+	// the app's signature.
+	if err := launchsvc.Unregister(plistName); err != nil {
+		return err
+	}
+	if err := launchsvc.Register(plistName); err != nil {
+		return err
+	}
+	if st, err = launchsvc.StatusOf(plistName); err != nil {
+		return err
+	}
+	if st != launchsvc.Enabled {
+		return fmt.Errorf("agent registration status after reload: %s", st)
+	}
+	fmt.Fprintln(os.Stderr, "icloud-ssh-agent: agent restarted.")
+	return nil
+}

@@ -29,6 +29,7 @@ Usage:
   icloud-ssh-agent export NAME                            (asks for Touch ID)
   icloud-ssh-agent delete NAME
   icloud-ssh-agent install | uninstall | status
+  icloud-ssh-agent reload                                 (restart if installed)
   icloud-ssh-agent logs [-f] [--last DURATION]            (default --last 1d)
   icloud-ssh-agent serve [--socket PATH]
 
@@ -68,6 +69,8 @@ func main() {
 		err = cmdInstall(args)
 	case "uninstall":
 		err = cmdUninstall(args)
+	case "reload":
+		err = cmdReload(args)
 	case "status":
 		err = cmdStatus(args)
 	case "logs", "log":
