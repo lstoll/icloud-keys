@@ -6,6 +6,7 @@
 package sshstore
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -127,6 +128,15 @@ func (s *Store) add(name string, priv any, policy sshagent.Policy) (sshagent.Key
 	signer, err := ssh.NewSignerFromKey(priv)
 	if err != nil {
 		return sshagent.Key{}, fmt.Errorf("unsupported key: %w", err)
+	}
+	existing, err := s.Keys()
+	if err != nil {
+		return sshagent.Key{}, err
+	}
+	for _, k := range existing {
+		if bytes.Equal(k.Public.Marshal(), signer.PublicKey().Marshal()) {
+			return sshagent.Key{}, fmt.Errorf("this key is already stored as %q", k.Name)
+		}
 	}
 	block, err := ssh.MarshalPrivateKey(priv, name)
 	if err != nil {

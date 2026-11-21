@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -267,12 +268,26 @@ func (c *conn) find(key ssh.PublicKey) (Key, error) {
 		return Key{}, err
 	}
 	want := key.Marshal()
+	var found []Key
 	for _, k := range keys {
 		if bytes.Equal(k.Public.Marshal(), want) {
-			return k, nil
+			found = append(found, k)
 		}
 	}
-	return Key{}, errors.New("key not found")
+	switch len(found) {
+	case 0:
+		return Key{}, errors.New("key not found")
+	case 1:
+		return found[0], nil
+	}
+	// The same key under several names (e.g. imported on two Macs) has
+	// several policies; picking one would let the loosest win. Refuse.
+	names := make([]string, len(found))
+	for i, k := range found {
+		names[i] = k.Name
+	}
+	c.a.logger().Warn("denied: key stored under several names", "names", names)
+	return Key{}, fmt.Errorf("%w: key is stored under several names (%s); delete all but one", ErrDenied, strings.Join(names, ", "))
 }
 
 func (c *conn) Extension(extensionType string, contents []byte) ([]byte, error) {

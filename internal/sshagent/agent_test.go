@@ -556,3 +556,16 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// Duplicates can arrive by sync even though the store refuses them; the agent
+// must not let either name's policy decide.
+func TestDuplicateKeyDenied(t *testing.T) {
+	h := newHarness(t, Policy{PurposeGit: ActionDeny})
+	h.store.keys = append(h.store.keys, Key{Name: "loose", Public: h.signer.PublicKey(), Policy: Policy{PurposeGit: ActionAllow}})
+	if _, err := h.client(t).Sign(h.signer.PublicKey(), sshsigData("git")); err == nil {
+		t.Fatal("signed with a key stored under two names")
+	}
+	if h.store.reads != 0 || h.prompter.count() != 0 {
+		t.Fatal("read secret or prompted for an ambiguous key")
+	}
+}

@@ -252,10 +252,7 @@ func loadSecretLocked(name string) (*age.HybridIdentity, error) {
 				return nil, err
 			}
 			if mode == AccessControl5m {
-				a.stampPresence(machine, time.Now())
-				if raw, err := json.Marshal(a); err == nil {
-					_ = s.SetAttrs(name, it.Label, raw)
-				}
+				stampPresence(s, name, machine)
 			}
 		}
 	}
@@ -269,6 +266,26 @@ func loadSecretLocked(name string) (*age.HybridIdentity, error) {
 	}
 	secrets[name] = id
 	return id, nil
+}
+
+// stampPresence records a 5m approval for this Mac. It re-reads the item
+// rather than writing back what was read before the prompt: a
+// --set-access-control while the prompt was open must not be undone. Keychain
+// has no compare-and-swap, so a tiny window remains between this read and
+// write, but it no longer spans a Touch ID prompt.
+func stampPresence(s *kc.Store, name, machine string) {
+	it, err := s.Item(name)
+	if err != nil {
+		return
+	}
+	a, err := parsePublicAttrs(it.Attrs)
+	if err != nil || a.mode() != AccessControl5m {
+		return
+	}
+	a.stampPresence(machine, time.Now())
+	if raw, err := json.Marshal(a); err == nil {
+		_ = s.SetAttrs(name, it.Label, raw)
+	}
 }
 
 // requireUserPresenceLocked prompts at most once per process: age -j icloud

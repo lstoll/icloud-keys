@@ -242,3 +242,16 @@ func TestBadItemSkipped(t *testing.T) {
 		t.Fatalf("Keys = %+v, %v", keys, err)
 	}
 }
+
+func TestDuplicateKeyRejected(t *testing.T) {
+	s, b, _ := newStore()
+	if _, err := s.Generate("work", sshagent.DefaultPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Import("again", b.items["work"].secret, nil, sshagent.Policy{sshagent.PurposeSSH: sshagent.ActionAllow}); err == nil {
+		t.Fatal("same key imported under a second name")
+	}
+	if len(b.items) != 1 {
+		t.Fatalf("items = %d", len(b.items))
+	}
+}

@@ -97,7 +97,10 @@ func listen(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(path); err == nil {
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode().Type() != os.ModeSocket {
+			return nil, fmt.Errorf("%s exists and is not a socket; refusing to replace it", path)
+		}
 		if c, err := net.DialTimeout("unix", path, time.Second); err == nil {
 			c.Close()
 			return nil, fmt.Errorf("an agent is already listening on %s", path)

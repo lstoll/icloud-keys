@@ -162,4 +162,16 @@ jobs:
             exit 0
           fi
           git -C homebrew-tap commit -m "${TOOL} ${VERSION}"
-          git -C homebrew-tap push "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/lstoll/homebrew-tap.git" HEAD:main
+          # The other tool's release may push to the tap at the same time; each
+          # touches only its own cask, so rebase onto it and retry.
+          tap="https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/lstoll/homebrew-tap.git"
+          for attempt in 1 2 3 4 5; do
+            if git -C homebrew-tap push "$tap" HEAD:main; then
+              exit 0
+            fi
+            echo "tap push rejected (attempt ${attempt}); rebasing"
+            sleep $((attempt * 3))
+            git -C homebrew-tap pull --rebase "$tap" main
+          done
+          echo "could not push ${cask} to lstoll/homebrew-tap" >&2
+          exit 1
